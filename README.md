@@ -1,18 +1,22 @@
 # Description
-This is a Google Apps Script that automatically adds new Youtube videos to playlists (a replacement for Youtube Collections feature). 
+This is a Google Apps Script that automatically adds new Youtube videos (and removes watched videos) to playlists (a replacement for Youtube Collections feature).
 
 This is done using Google Sheets for interface, Google Script + Youtube API v3 for executing and scheduling.
 
 [(Older version here)](https://github.com/Elijas/auto-youtube-subscription-playlist)
 
 # Features
-1. Adds all new videos to Youtube playlists (uploaded later than some date)
-  
+1. Adds all new videos to Youtube playlists (uploaded in the last 24 hours)
+
   1.1. From ALL subscribed channels
-  
+
   1.2. From any list of channels (by username or channel ID)
-  
-2. Optional - ability to set automatic interval for updates
+
+2. Filters out already added and watched videos.
+
+3. Removes watched videos at each update.
+
+4. Sends an email if there've been any errors.
 
 # Set-up Instructions
 1. [Copy](https://goo.gl/FMmDZR) the Sheet to your Google Drive.

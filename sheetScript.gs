@@ -1,126 +1,175 @@
-// TODO: Better exception handling for Youtube API calls
-// TODO: Deal with playlist limits (~ 200-218 videos)
-// TODO: Special keyword "ALLOTHER" for all other (unmentioned yet in the app) channel ids
-
 function updatePlaylists() {
+  var reservedTableRows = 3; // Row index of the first PlaylistID
+  var reservedTableColumns = 2; // Column index of the first ChannelID
+  var debugFlag_dontUpdatePlaylists = false;
+  var flag_sendLogMail = true;
+
+  /// VARS
   var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheets()[0];
   var data = sheet.getDataRange().getValues();
-  var reservedTableRows = 3; // Start of the range of the PlaylistID+ChannelID data
-  var reservedTableColumns = 2; // Start of the range of the ChannelID data
-  var reservedTimestampCell = "F1";
-  if (!sheet.getRange(reservedTimestampCell).getValue()) sheet.getRange(reservedTimestampCell).setValue(ISODateString(new Date()));
-  
-  var debugFlag_dontUpdateTimestamp = false;
-  var debugFlag_dontUpdatePlaylists = false;
-  
-  /// For each playlist...
-  for (var iRow = reservedTableRows; iRow < sheet.getLastRow(); iRow++) {
-    var playlistId = data[iRow][0];
-    if (!playlistId) continue;
-    
-    /// ...get channels...
+  var errorLog = '';
+
+  /// FOR EACH PLAYLIST
+  for (var currentRow = reservedTableRows; currentRow < sheet.getLastRow(); currentRow++) {
+    var playlistId = data[currentRow][0];
+    if (!playlistId)
+      continue;
+
+    /// GET CHANNEL IDS
     var channelIds = [];
-    for (var iColumn = reservedTableColumns; iColumn < sheet.getLastColumn(); iColumn++) {
-      var channel = data[iRow][iColumn];
-      if (!channel) continue;
+    for (var currentColumn = reservedTableColumns; currentColumn < sheet.getLastColumn(); currentColumn++) {
+      var channel = data[currentRow][currentColumn];
+      if (!channel)
+        continue;
       else if (channel == "ALL")
         channelIds.push.apply(channelIds, getAllChannelIds());
-      else if (!(channel.substring(0,2) == "UC" && channel.length > 10)) // Check if it is not a channel ID (therefore a username). MaybeTODO: do a better validation, since might interpret a channel with a name "UC..." as a channel ID
-      {
+      else if (!(channel.substring(0,2) == "UC" && channel.length > 10)) {
         try {
           channelIds.push(YouTube.Channels.list('id', {forUsername: channel, maxResults: 1}).items[0].id);
         } catch (e) {
-          Logger.log("ERROR: " + e.message);
+          Logger.log("ERROR: " + e.message + " while getting channel ids.");
           continue;
         }
       }
       else
         channelIds.push(channel);
     }
-    
-    /// ...get videos from the channels...
+
+    /// GET VIDEOS FROM 24 HOURS AGO
     var videoIds = [];
-    var lastTimestamp = sheet.getRange(reservedTimestampCell).getValue();
+    var fromDate = ISODateString(subDaysFromDate(new Date(), 1));
     for (var i = 0; i < channelIds.length; i++) {
-      videoIds.push.apply(videoIds, getVideoIds(channelIds[i], lastTimestamp)); // Append new videoIds array to the original one
+      videoIds.push.apply(videoIds, getVideoIds(channelIds[i], fromDate));
     }
-    
-    if (!debugFlag_dontUpdateTimestamp) sheet.getRange(reservedTimestampCell).setValue(ISODateString(new Date())); // Update timestamp
-    
-    /// ...add videos to the playlist
+//    Logger.log("Number of vids posted from yesteday: " + videoIds.length);
+
+    /// FILTER OUT ALREADY ADDED VIDEOS
+    var playlistVideos = getVideosForPlaylist(playlistId);
+    videoIds = videoIds.filter(function(videoId) {
+      return playlistVideos.every(function(video) {
+        return video.snippet.resourceId.videoId != videoId;
+      });
+    });
+//    Logger.log("After filtering already added vids : " + videoIds.length);
+
+    /// FILTER OUT WATCHED VIDEOS
+    var historyPlaylistId = getHistoryPlaylistId();
+    var watchedVideos = getVideosForPlaylist(historyPlaylistId);
+    videoIds = videoIds.filter(function(videoId) {
+      return watchedVideos.every(function(video) {
+        return video.snippet.resourceId.videoId != videoId;
+      });
+    });
+//    Logger.log("After filtering already watched vids : " + videoIds.length);
+
+    /// REMOVE WATCHED VIDEOS FROM PLAYLIST
+    var removedVideosCount = 0;
+    playlistVideos.filter(function(video) {
+      return watchedVideos.some(function(watchedVideo) {
+        return video.snippet.resourceId.videoId == watchedVideo.snippet.resourceId.videoId;
+      });
+    }).forEach(function(video) {
+      removedVideosCount += 1;
+      removeVideoFromPlaylist(video.id);
+      Utilities.sleep(1000);
+    });
+//    Logger.log("Number of videos removed from playlist " + videoIds.length);
+
+    /// ADD NEW VIDEOS TO PLAYLIST
     if (!debugFlag_dontUpdatePlaylists) {
       for (var i = 0; i < videoIds.length; i++) {
-        try {
-          YouTube.PlaylistItems.insert
-          ( { snippet: 
-             { playlistId: playlistId, 
-              resourceId: 
-              { videoId: videoIds[i],
-               kind: 'youtube#video'
-              }
-             }
-            }, 'snippet,contentDetails'
-          );
-        } catch (e) {
-          Logger.log("ERROR: " + e.message);
-          continue;
-        }
-        
+        addVideoToPlaylist(videoIds[i], playlistId);
         Utilities.sleep(1000);
       }
+    }
+
+    // SEND DEBUG MAIL
+    if (Logger.getLog() != null && Logger.getLog() != '' && flag_sendLogMail) {
+      var recipient = Session.getActiveUser().getEmail();
+      var subject = 'Youtube playlist auto-refill log';
+      var body = Logger.getLog();
+      MailApp.sendEmail(recipient, subject, body);
     }
   }
 }
 
-function getVideoIds(channelId, lastTimestamp) {
-  var videoIds = [];
-  
-  // First call
+function getHistoryPlaylistId() {
   try {
-    
-    var results = YouTube.Search.list('id', {
-      channelId: channelId,
-      maxResults: 50,
-      order: "date",
-      publishedAfter: lastTimestamp
-    });
-
-  } catch (e) {
-    Logger.log("ERROR: " + e.message);
-    return;
+    var channels = YouTube.Channels.list('contentDetails', {mine: true});
+  } catch(e) {
+    Logger.log("ERROR: " + e.message + " while getting history playlist id.");
   }
+  return channels.items[0].contentDetails.relatedPlaylists.watchHistory;
+}
 
-  for (var j = 0; j < results.items.length; j++) {
-    var item = results.items[j];
-    videoIds.push(item.id.videoId);
-  }
-  
-  // Other calls
-  var nextPageToken = results.nextPageToken;
-  for (var pageNo = 0; pageNo < (-1+Math.ceil(results.pageInfo.totalResults / 50.0)); pageNo++) {
-  
+function getVideoIds(channelId, fromDate) {
+  var channelVideoIds = [];
+  var nextPageToken = '';
+  while (nextPageToken != null) {
     try {
-      results = YouTube.Search.list('id', {
+      var channelResponse = YouTube.Search.list('id', {
         channelId: channelId,
         maxResults: 50,
         order: "date",
-        publishedAfter: lastTimestamp,
+        publishedAfter: fromDate,
         pageToken: nextPageToken
       });
-    } catch (e) {
-      Logger.log("ERROR: " + e.message);
-      continue;
+    } catch(e) {
+      Logger.log("ERROR: " + e.message + " while getting recent videos from channel.");
     }
-    
-    for (var j = 0; j < results.items.length; j++) {
-      var item = results.items[j];
-      videoIds.push(item.id.videoId);
+    for (var j = 0; j < channelResponse.items.length; j++) {
+      var item = channelResponse.items[j];
+      channelVideoIds.push(item.id.videoId)
     }
-    
-    nextPageToken = results.nextPageToken;
+    nextPageToken = channelResponse.nextPageToken;
   }
-  
-  return videoIds;
+  return channelVideoIds;
+}
+
+function addVideoToPlaylist(videoId, playlistId) {
+  try {
+    YouTube.PlaylistItems.insert( {
+      snippet: {
+        playlistId: playlistId,
+        resourceId: {
+          videoId: videoId,
+          kind: 'youtube#video'
+        }
+      }
+    }, 'snippet,contentDetails');
+  } catch (e) {
+    Logger.log("ERROR: " + e.message + " while adding video to playlist");
+  }
+}
+
+function removeVideoFromPlaylist(videoId) {
+  try {
+    YouTube.PlaylistItems.remove(videoId);
+  } catch (e) {
+    Logger.log("ERROR: " + e.message + " while removing video from playlist");
+  }
+}
+
+function getVideosForPlaylist(playlistId) {
+  var playlistVideos = [];
+  var nextPageToken = '';
+  while (nextPageToken != null) {
+    try {
+      var playlistResponse = YouTube.PlaylistItems.list('snippet', {
+      playlistId: playlistId,
+      maxResults: 50,
+      pageToken: nextPageToken
+    });
+    } catch(e) {
+      Logger.log("ERROR: " + e.message + " while getting videos from playlist");
+    }
+    for (var j = 0; j < playlistResponse.items.length; j++) {
+      var playlistItem = playlistResponse.items[j];
+      playlistVideos.push(playlistItem)
+    }
+    nextPageToken = playlistResponse.nextPageToken;
+  }
+  return playlistVideos;
 }
 
 function getAllChannelIds() { // get YT Subscriptions-List, src: https://www.reddit.com/r/youtube/comments/3br98c/a_way_to_automatically_add_subscriptions_to/
@@ -149,53 +198,12 @@ function getAllChannelIds() { // get YT Subscriptions-List, src: https://www.red
   } catch (e) {
     return e;
   }
-  
-  Logger.log('Acquired subscriptions %s', AboList[1].length);
   return AboList[1];
 }
 
-function getAllChannelIds_OLD() { // Note: this function is not used.
-  var channelIds = [];
-  
-  // First call
-  try {
-    var results = YouTube.Subscriptions.list('snippet', {
-      mine: true,
-      maxResults: 50
-    });
-  } catch (e) {
-    Logger.log("ERROR: " + e.message);
-    return;
-  }
-  for (var i = 0; i < results.items.length; i++) {
-    var item = results.items[i];
-    channelIds.push(item.snippet.resourceId.channelId);
-  }  
-  
-  // Other calls
-  var nextPageToken = results.nextPageToken;
-  for (var pageNo = 0; pageNo < (-1+Math.ceil(results.pageInfo.totalResults / 50.0)); pageNo++) {
-    
-    try {
-      results = YouTube.Subscriptions.list('snippet', {
-        mine: true,
-        maxResults: 50,
-        pageToken: nextPageToken
-      });
-    } catch (e) {
-      Logger.log("ERROR: " + e.message);
-      continue;
-    }
-    for (var i = 0; i < results.items.length; i++) {
-      var item = results.items[i];
-      channelIds.push(item.snippet.resourceId.channelId);
-    }
-    
-    nextPageToken = results.nextPageToken;
-  }
-  
-  Logger.log('Acquired subscriptions %s, Actual subscriptions %s', channelIds.length, results.pageInfo.totalResults);
-  return channelIds;
+function subDaysFromDate(date,d){
+  var result = new Date(date.getTime()-d*(24*3600*1000));
+  return result
 }
 
 function ISODateString(d) { // modified from src: http://stackoverflow.com/questions/7244246/generate-an-rfc-3339-timestamp-similar-to-google-tasks-api

@@ -119,7 +119,9 @@ function getVideoIds(channelId, fromDate) {
     }
     for (var j = 0; j < channelResponse.items.length; j++) {
       var item = channelResponse.items[j];
-      channelVideoIds.push(item.id.videoId)
+      if (item.id.videoId) {
+        channelVideoIds.push(item.id.videoId);
+      }
     }
     nextPageToken = channelResponse.nextPageToken;
   }
@@ -138,7 +140,7 @@ function addVideoToPlaylist(videoId, playlistId) {
       }
     }, 'snippet,contentDetails');
   } catch (e) {
-    Logger.log("ERROR: " + e.message + " while adding video to playlist");
+    Logger.log("ERROR: " + e.message + " while adding video " + videoId +" to playlist " + playlistId);
   }
 }
 
